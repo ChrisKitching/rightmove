@@ -1,8 +1,10 @@
 #!/usr/bin/env zsh
 
 URL=$1
+GOOGLE_API_KEY=$2
 
 # Note that RightMove needs UA spoofing, or it just 403s you
+# We pretend to be an iPhone to get a simpler webpage :D
 USER_AGENT="Mozilla/5.0 (iPhone; U; CPU iPhone OS 4_3_3 like Mac OS X; en-us) AppleWebKit/533.17.9 (KHTML, like Gecko) Version/5.0.2 Mobile/8J2 Safari/6533.18.5"
 
 TMPNAME=$(mktemp -u)
@@ -28,6 +30,10 @@ AVAILABLE=$(extractField "Date available")
 ADDED=$(extractField "Added on Rightmove")
 REDUCED=$(extractField "Reduced on Rightmove")
 PRICE=$(cat $TMPNAME | grep '<span id="price">' | cut -d ';' -f 2 | cut -d ' ' -f 1 | sed -Ee 's/,//g')
+DEPOSIT=$(cat $TMPNAME | grep "<strong>Deposit" | cut -d ';' -f 2 | cut -d '<' -f 1)
+if [ "$DEPOSIT" = "" ]; then
+    DEPOSIT="?"
+fi
 
 # eg. "1 bedroom flat"
 BEDROOM_DESC=$(cat $TMPNAME | grep '<span id="bedrooms">' | cut -d '>' -f 2 | cut -d '<' -f 1)
@@ -45,4 +51,45 @@ if [ "$ADDED" = "?" ]; then
     ADDED="> $REDUCED"
 fi
 
-echo "$NUM_BEDROOMS|$PRICE|$TYPE|$AVAILABLE|$FURNISHING|$STATUS|$ADDED"
+# Extract GPS coordinates... BY PARSING JSON :D :D
+getLL() {
+    echo $1 | grep $2 | cut -d ':' -f 2 | sed -Ee 's/[^0-9.-]//g'
+}
+
+COORD_BLOB=$(cat $TMPNAME | grep -A 11 "var mapOptions")
+
+LAT=$(getLL $COORD_BLOB latitude)
+LONG=$(getLL $COORD_BLOB longitude)
+
+# Skip the maps stuff if coordinates are zero...
+if [ $LAT = "0.0" ]; then
+    LAB_DISTANCE="?"
+    LAB_TIME="?"
+else
+    COMPUTER_LAB="51.7598207,-1.2584726000000046"
+
+    API_ROUTE="https://maps.googleapis.com/maps/api/directions/json"
+
+    # Ask Google how far and how long it'll take.
+    getRouteInfo() {
+        curl -s "$API_ROUTE?mode=$3&origin=$1,$2&destination=$COMPUTER_LAB&key=$GOOGLE_API_KEY" | jq -r '.routes[0].legs[0]|(.distance.value,.duration.value)'
+    }
+
+    # We'll ask about both walking and cycling, since Google is pretty bad at knowing about some cycle routes, but sometimes
+    # finds them when asked to walk.
+    CYCLE_ROUTE_INFO=$(getRouteInfo $LAT $LONG bicycling)
+    WALK_ROUTE_INFO=$(getRouteInfo $LAT $LONG walking)
+
+    C_LAB_DIST=$(echo $CYCLE_ROUTE_INFO | head -n 1)
+    C_LAB_TIME=$(echo $CYCLE_ROUTE_INFO | tail -n 1)
+
+    W_LAB_DIST=$(echo $WALK_ROUTE_INFO | head -n 1)
+    W_LAB_TIME=$(echo $WALK_ROUTE_INFO | tail -n 1)
+
+    LAB_DISTANCE=$(printf "$C_LAB_DIST\n$W_LAB_DIST" | sort -n | head -n 1)
+    LAB_TIME=00:00:$(printf "$C_LAB_TIME\n$W_LAB_TIME" | sort -n | head -n 1)
+
+    LAB_DISTANCE=$(calc $LAB_DISTANCE / 1000 | sed -Ee 's/[^0-9.-]//g' | cut -c '1-3')
+fi
+
+echo "$NUM_BEDROOMS|$PRICE|$DEPOSIT|$TYPE|$AVAILABLE|$FURNISHING|$STATUS|$ADDED|$LAB_DISTANCE|$LAB_TIME"

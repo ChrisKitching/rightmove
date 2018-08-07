@@ -6,6 +6,7 @@ GOOGLE_API_KEY=$2
 # Note that RightMove needs UA spoofing, or it just 403s you
 # We pretend to be an iPhone to get a simpler webpage :D
 USER_AGENT="Mozilla/5.0 (iPhone; U; CPU iPhone OS 4_3_3 like Mac OS X; en-us) AppleWebKit/533.17.9 (KHTML, like Gecko) Version/5.0.2 Mobile/8J2 Safari/6533.18.5"
+DESKTOP_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_6_8) AppleWebKit/534.30 (KHTML, like Gecko) Chrome/12.0.742.112 Safari/534.30"
 
 TMPNAME=$(mktemp -u)
 curl -sA "$USER_AGENT" $1 > $TMPNAME
@@ -65,6 +66,8 @@ LONG=$(getLL $COORD_BLOB longitude)
 if [ $LAT = "0.0" ]; then
     LAB_DISTANCE="?"
     LAB_TIME="?"
+    BROADBAND_COST="?"
+    BROADBAND_SPEED="?"
 else
     COMPUTER_LAB="51.7598207,-1.2584726000000046"
 
@@ -90,6 +93,26 @@ else
     LAB_TIME=00:00:$(printf "$C_LAB_TIME\n$W_LAB_TIME" | sort -n | head -n 1)
 
     LAB_DISTANCE=$(calc $LAB_DISTANCE / 1000 | sed -Ee 's/[^0-9.-]//g' | cut -c '1-3')
+
+    # Download the webpage again, not pretending to be a phone, so we can steal the broadband API key.
+
+    TMPNAME2=$(mktemp -u)
+    curl -sA "$DESKTOP_USER_AGENT" $1 > $TMPNAME2
+
+    # Extract the super-duper secret API secret.
+    BROADBAND_ROUTE=$(cat $TMPNAME2 | grep "partnerships-broadband.sergei.io"| cut -d ':' -f 2- | sed -Ee 's|[^a-zA-Z0-9/?=.:-]||g')
+    BROADBAND_PAYLOAD=$(curl -sA "$DESKTOP_USER_AGENT" $BROADBAND_ROUTE)
+
+    BROADBAND_SPEED=$(echo "$BROADBAND_PAYLOAD" | jq -r '.speed_display')
+    BROADBAND_COST=$(echo "$BROADBAND_PAYLOAD" | jq -r '.first_year_cost')
+
+    rm $TMPNAME2
+
+    # Get the postcode from the GPS coordinates.
+    # POSTCODE=$(curl -q https://maps.googleapis.com/maps/api/geocode/json\?latlng\=$LAT,$LONG\&key\=$GOOGLE_API_KEY | jq -r '.results[].address_components[] | select(.types[0] == "postal_code") | select(.types | length == 1).long_name' | head -n 1)
+    # echo $POSTCODE
 fi
 
-echo "$NUM_BEDROOMS|$PRICE|$DEPOSIT|$TYPE|$AVAILABLE|$FURNISHING|$STATUS|$ADDED|$LAB_DISTANCE|$LAB_TIME"
+echo "$NUM_BEDROOMS|$PRICE|$DEPOSIT|$TYPE|$AVAILABLE|$FURNISHING|$STATUS|$ADDED|$LAB_DISTANCE|$LAB_TIME|$BROADBAND_SPEED|$BROADBAND_COST"
+
+rm $TMPNAME
